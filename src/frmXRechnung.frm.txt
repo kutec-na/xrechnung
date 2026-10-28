@@ -1,0 +1,884 @@
+'==============================================================================
+' frmXRechnung - Dialog "XRechnung erzeugen"
+' Alle Steuerelemente werden zur Laufzeit angelegt (Setup).
+'==============================================================================
+Option Explicit
+
+Private Const RH As Single = 18             ' Zeilenhöhe der Tabellen
+Private Const CTL_H As Single = 15          ' Höhe der Eingabefelder
+Private Const X_ID As Single = 2            ' Spalten der BT-Tabelle (wie clsBTRow)
+Private Const X_NAME As Single = 50
+Private Const X_REQ As Single = 330
+Private Const X_BM As Single = 360
+Private Const X_VAL As Single = 536
+Private Const MAP_W As Single = 420         ' Breite der Spaltenzuordnung
+
+Public Loading As Boolean
+Public LastMessage As String
+
+Private mDoc As Object
+Private mDefs() As tBTDef
+Private mDefN As Long
+Private mRows() As clsBTRow
+Private mGrpLbl() As MSForms.Label
+Private mLDefs() As tBTDef
+Private mLDefN As Long
+Private mMap() As clsMapRow
+
+Private mBmNames() As String
+Private mBmVals() As String
+Private mBmN As Long
+Private mTblPaths() As String
+Private mTblN As Long
+Private mGrid() As String
+Private mGRows As Long
+Private mGCols As Long
+Private mLines() As tLine
+Private mLineN As Long
+Private mTot As tTotals
+Private mBTH As Single                      ' Höhe der BT-Tabelle
+Private mMapH As Single                     ' Höhe von Spaltenzuordnung / Positionsliste
+
+Private WithEvents cboView As MSForms.ComboBox
+Private WithEvents cboTable As MSForms.ComboBox
+Private WithEvents txtHdr As MSForms.TextBox
+Private WithEvents txtFrom As MSForms.TextBox
+Private WithEvents txtTo As MSForms.TextBox
+Private WithEvents cmdSave As MSForms.CommandButton
+Private WithEvents cmdCreate As MSForms.CommandButton
+Private WithEvents cmdCancel As MSForms.CommandButton
+Private fraBT As MSForms.Frame
+Private fraMap As MSForms.Frame
+Private lstPos As MSForms.ListBox
+Private lblSum As MSForms.Label
+Private lblStatus As MSForms.Label
+
+'==============================================================================
+' Aufbau
+'==============================================================================
+
+Public Sub Setup(ByVal doc As Object)
+    Set mDoc = doc
+    Loading = True
+    Me.Caption = "XRechnung erzeugen - " & doc.Name
+    SizeForm
+    ReadBookmarks
+    mDefN = XR_GetHeaderDefs(mDefs)
+    mLDefN = XR_GetLineDefs(mLDefs)
+    BuildHeaderSection
+    BuildLineSection
+    BuildButtons
+    ListTables
+    ApplyConfig
+    LayoutRows
+    Loading = False
+    RefreshPositions
+End Sub
+
+' Dialoggröße an den Bildschirm anpassen; die Tabellen werden entsprechend niedriger
+Private Sub SizeForm()
+    Const FULL_W As Single = 966
+    Const FULL_H As Single = 668
+    Dim sw As Single, sh As Single, fw As Single, fh As Single, shrink As Single
+    fw = FULL_W
+    fh = FULL_H
+    If XR_ScreenPoints(sw, sh) Then
+        If fh > sh - 8 Then fh = sh - 8
+        If fw > sw - 8 Then fw = sw - 8
+    End If
+    If fh < 470 Then fh = 470
+    If fw < 760 Then fw = 760
+    Me.Width = fw
+    Me.Height = fh
+    shrink = FULL_H - fh
+    mBTH = 290 - shrink * 0.6
+    mMapH = 200 - shrink * 0.4
+End Sub
+
+Private Function NewLabel(ByVal container As Object, ByVal l As Single, ByVal t As Single, _
+                          ByVal w As Single, ByVal h As Single, ByVal cap As String) As MSForms.Label
+    Dim c As MSForms.Label
+    Set c = container.Controls.Add("Forms.Label.1")
+    c.Left = l: c.Top = t: c.Width = w: c.Height = h
+    c.Caption = cap
+    c.WordWrap = False
+    Set NewLabel = c
+End Function
+
+Private Function NewText(ByVal container As Object, ByVal l As Single, ByVal t As Single, _
+                         ByVal w As Single) As MSForms.TextBox
+    Dim c As MSForms.TextBox
+    Set c = container.Controls.Add("Forms.TextBox.1")
+    c.Left = l: c.Top = t: c.Width = w: c.Height = CTL_H
+    Set NewText = c
+End Function
+
+Private Sub ReadBookmarks()
+    Dim bm As Object, i As Long, j As Long, n As Long, tN As String, tV As String
+    n = mDoc.Bookmarks.Count
+    ReDim mBmNames(1 To n + 1)
+    ReDim mBmVals(1 To n + 1)
+    mBmN = 0
+    For Each bm In mDoc.Bookmarks
+        If Left$(bm.Name, 1) <> "_" Then
+            mBmN = mBmN + 1
+            mBmNames(mBmN) = bm.Name
+            mBmVals(mBmN) = CleanText(XR_RangeText(bm.Range))
+        End If
+    Next
+    ' natürlich sortieren (BT_2 vor BT_10)
+    For i = 2 To mBmN
+        tN = mBmNames(i): tV = mBmVals(i)
+        j = i - 1
+        Do While j >= 1
+            If XR_NatKey(mBmNames(j)) <= XR_NatKey(tN) Then Exit Do
+            mBmNames(j + 1) = mBmNames(j): mBmVals(j + 1) = mBmVals(j)
+            j = j - 1
+        Loop
+        mBmNames(j + 1) = tN: mBmVals(j + 1) = tV
+    Next
+End Sub
+
+Private Function BmText(ByVal nm As String) As String
+    Dim i As Long
+    For i = 1 To mBmN
+        If StrComp(mBmNames(i), nm, vbTextCompare) = 0 Then BmText = mBmVals(i): Exit Function
+    Next
+End Function
+
+Private Function BmItems(ByVal firstItem As String) As Variant
+    Dim a() As String, i As Long
+    ReDim a(0 To mBmN)
+    a(0) = firstItem
+    For i = 1 To mBmN
+        a(i) = mBmNames(i)
+    Next
+    BmItems = a
+End Function
+
+Private Sub BuildHeaderSection()
+    Dim w As Single, i As Long, lbl As MSForms.Label, r As clsBTRow, valW As Single
+    Dim itemsM As Variant, itemsC As Variant, fx As Single
+
+    w = Me.InsideWidth - 12
+    Set lbl = NewLabel(Me, 6, 6, 400, 14, "1. Rechnungsdaten (BT-Felder)")
+    lbl.Font.Bold = True
+    lbl.Font.Size = 9
+    Set lbl = NewLabel(Me, 410, 7, 300, 12, "Textmarken im Dokument: " & mBmN)
+    lbl.ForeColor = RGB(90, 90, 90)
+    NewLabel Me, w - 236, 7, 50, 12, "Anzeigen:"
+    Set cboView = Me.Controls.Add("Forms.ComboBox.1", "cboView")
+    cboView.Left = w - 186: cboView.Top = 4: cboView.Width = 192: cboView.Height = CTL_H
+    cboView.Style = 2
+    cboView.List = Array("Alle Felder", "Pflichtfelder (P)", "Pflicht- und bedingte Felder (P, C)", _
+                         "Belegte Felder", "Fehlende Pflichtfelder")
+    cboView.ListIndex = 0
+
+    fx = 6 + 2
+    Set lbl = NewLabel(Me, fx + X_ID, 24, 46, 12, "BT-Nr."): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, fx + X_NAME, 24, 270, 12, "Bezeichnung in EN 16931"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, fx + X_REQ, 24, 30, 12, "Pflicht"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, fx + X_BM, 24, 170, 12, "Textmarke"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, fx + X_VAL, 24, 300, 12, "Inhalt"): lbl.Font.Bold = True
+
+    Set fraBT = Me.Controls.Add("Forms.Frame.1", "fraBT")
+    fraBT.Left = 6: fraBT.Top = 38: fraBT.Width = w: fraBT.Height = mBTH
+    fraBT.Caption = ""
+    fraBT.SpecialEffect = 2                 ' fmSpecialEffectSunken
+    fraBT.ScrollBars = 2                    ' fmScrollBarsVertical
+    fraBT.KeepScrollBarsVisible = 2
+    valW = w - X_VAL - 26
+
+    itemsM = BmItems(SRC_MANUAL)
+    itemsC = BmItems(SRC_CALC)
+    ReDim mRows(1 To mDefN)
+    ReDim mGrpLbl(1 To mDefN)
+    For i = 1 To mDefN
+        If mDefs(i).Kind = "G" Then
+            Set lbl = NewLabel(fraBT, 0, 0, w - 20, CTL_H, " " & mDefs(i).ID & "   " & mDefs(i).Name)
+            lbl.Font.Bold = True
+            lbl.BackStyle = 1               ' fmBackStyleOpaque
+            lbl.BackColor = RGB(221, 235, 247)
+            Set mGrpLbl(i) = lbl
+        Else
+            Set r = New clsBTRow
+            If mDefs(i).Kind = "K" Then
+                r.Create Me, fraBT, i, mDefs(i).ID, mDefs(i).Name, mDefs(i).Req, mDefs(i).Kind, itemsC, valW
+            Else
+                r.Create Me, fraBT, i, mDefs(i).ID, mDefs(i).Name, mDefs(i).Req, mDefs(i).Kind, itemsM, valW
+            End If
+            Set mRows(i) = r
+        End If
+    Next
+End Sub
+
+Private Sub BuildLineSection()
+    Dim y As Single, i As Long, lbl As MSForms.Label, m As clsMapRow, x As Single
+    Dim colW As Variant, colCap As Variant, lw As Single
+
+    y = 38 + mBTH + 6
+    Set lbl = NewLabel(Me, 6, y, 400, 14, "2. Rechnungspositionen (BG-25)")
+    lbl.Font.Bold = True
+    lbl.Font.Size = 9
+    y = y + 18
+    NewLabel Me, 6, y + 2, 44, 12, "Tabelle:"
+    Set cboTable = Me.Controls.Add("Forms.ComboBox.1", "cboTable")
+    cboTable.Left = 46: cboTable.Top = y: cboTable.Width = 380: cboTable.Height = CTL_H
+    cboTable.Style = 2
+    cboTable.ListWidth = 560
+    NewLabel Me, 436, y + 2, 54, 12, "Kopfzeilen:"
+    Set txtHdr = NewText(Me, 490, y, 24)
+    txtHdr.ControlTipText = "Anzahl der Überschriftenzeilen der Tabelle"
+    NewLabel Me, 524, y + 2, 78, 12, "Datenzeilen von:"
+    Set txtFrom = NewText(Me, 600, y, 28)
+    txtFrom.ControlTipText = "Erste Tabellenzeile mit Positionen (leer = nach den Kopfzeilen)"
+    NewLabel Me, 634, y + 2, 18, 12, "bis:"
+    Set txtTo = NewText(Me, 652, y, 28)
+    txtTo.ControlTipText = "Letzte Tabellenzeile mit Positionen (leer = bis zum Tabellenende)"
+    Set lbl = NewLabel(Me, 688, y + 2, Me.InsideWidth - 694, 12, _
+                       "Zeilen ohne Bezeichnung oder ohne Zahl werden übersprungen.")
+    lbl.ForeColor = RGB(90, 90, 90)
+
+    y = y + 20
+    Set lbl = NewLabel(Me, 8 + 2, y, 40, 12, "BT-Nr."): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, 8 + 44, y, 140, 12, "Bezeichnung"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, 8 + 192, y, 110, 12, "Spalte"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, 8 + 306, y, 36, 12, "Zeile(n)"): lbl.Font.Bold = True
+    Set lbl = NewLabel(Me, 8 + 342, y, 60, 12, "Standard"): lbl.Font.Bold = True
+
+    lw = Me.InsideWidth - 6 - (6 + MAP_W + 6)
+    colW = Array(30, 66, 186, 44, 34, 58, 60, 44)
+    colCap = Array("Pos.", "Art.-Nr.", "Bezeichnung", "Menge", "Einh.", "Einzelpreis", "Netto", "USt")
+    x = 6 + MAP_W + 6 + 4
+    For i = 0 To UBound(colW)
+        Set lbl = NewLabel(Me, x, y, colW(i), 12, colCap(i))
+        lbl.Font.Bold = True
+        x = x + colW(i)
+    Next
+
+    y = y + 13
+    Set fraMap = Me.Controls.Add("Forms.Frame.1", "fraMap")
+    fraMap.Left = 6: fraMap.Top = y: fraMap.Width = MAP_W: fraMap.Height = mMapH
+    fraMap.Caption = ""
+    fraMap.SpecialEffect = 2
+    fraMap.ScrollBars = 2
+    fraMap.KeepScrollBarsVisible = 2
+    ReDim mMap(1 To mLDefN)
+    For i = 1 To mLDefN
+        Set m = New clsMapRow
+        m.Create Me, fraMap, 2 + (i - 1) * RH, mLDefs(i).ID, mLDefs(i).Name, mLDefs(i).Req, mLDefs(i).Kind
+        Set mMap(i) = m
+    Next
+    fraMap.ScrollHeight = 4 + mLDefN * RH
+
+    Set lstPos = Me.Controls.Add("Forms.ListBox.1", "lstPos")
+    lstPos.Left = 6 + MAP_W + 6: lstPos.Top = y: lstPos.Width = lw: lstPos.Height = mMapH - 16
+    lstPos.ColumnCount = 8
+    lstPos.ColumnWidths = "30;66;186;44;34;58;60;44"
+    Set lblSum = NewLabel(Me, lstPos.Left, y + mMapH - 12, lw, 12, "")
+    lblSum.Font.Bold = True
+End Sub
+
+Private Sub BuildButtons()
+    Dim y As Single, w As Single
+    w = Me.InsideWidth
+    y = Me.InsideHeight - 30
+    Set lblStatus = NewLabel(Me, 8, y + 2, w - 300, 24, "")
+    lblStatus.WordWrap = True
+    lblStatus.Font.Bold = True
+
+    Set cmdSave = Me.Controls.Add("Forms.CommandButton.1", "cmdSave")
+    cmdSave.Caption = "Speichern"
+    cmdSave.ControlTipText = "Zuordnung und Eingaben als Dokumenteigenschaft ""XRechnung"" speichern"
+    cmdSave.Left = w - 282: cmdSave.Top = y: cmdSave.Width = 86: cmdSave.Height = 24
+
+    Set cmdCreate = Me.Controls.Add("Forms.CommandButton.1", "cmdCreate")
+    cmdCreate.Caption = "Erstellen"
+    cmdCreate.ControlTipText = "XRechnung als XML-Datei neben dem Dokument erstellen"
+    cmdCreate.Left = w - 188: cmdCreate.Top = y: cmdCreate.Width = 86: cmdCreate.Height = 24
+    cmdCreate.Font.Bold = True
+
+    Set cmdCancel = Me.Controls.Add("Forms.CommandButton.1", "cmdCancel")
+    cmdCancel.Caption = "Abbrechen"
+    cmdCancel.Cancel = True
+    cmdCancel.Left = w - 94: cmdCancel.Top = y: cmdCancel.Width = 86: cmdCancel.Height = 24
+End Sub
+
+' Zeilen der BT-Tabelle je nach Ansichtsfilter anordnen
+Private Sub LayoutRows()
+    Dim i As Long, j As Long, y As Single, mode As Long, anyVis As Boolean, vis As Boolean
+    mode = cboView.ListIndex
+    y = 2
+    For i = 1 To mDefN
+        If mDefs(i).Kind = "G" Then
+            anyVis = False
+            For j = i + 1 To mDefN
+                If mDefs(j).Kind = "G" Then Exit For
+                If RowVisible(j, mode) Then anyVis = True: Exit For
+            Next
+            mGrpLbl(i).Visible = anyVis
+            If anyVis Then mGrpLbl(i).Top = y: y = y + RH
+        Else
+            vis = RowVisible(i, mode)
+            mRows(i).SetVisible vis
+            If vis Then mRows(i).SetTop y: y = y + RH
+        End If
+    Next
+    fraBT.ScrollHeight = y + 2
+    fraBT.ScrollTop = 0
+End Sub
+
+Private Function RowVisible(ByVal i As Long, ByVal mode As Long) As Boolean
+    Dim r As clsBTRow
+    Set r = mRows(i)
+    Select Case mode
+        Case 1: RowVisible = (r.Req = "P")
+        Case 2: RowVisible = (r.Req = "P" Or r.Req = "C")
+        Case 3: RowVisible = (Len(r.Value) > 0)
+        Case 4: RowVisible = (r.Req = "P" And Len(r.Value) = 0)
+        Case Else: RowVisible = True
+    End Select
+End Function
+
+'==============================================================================
+' Tabellen und Positionen
+'==============================================================================
+
+Private Sub ListTables()
+    Dim labels() As String, i As Long
+    mTblN = 0
+    ReDim mTblPaths(1 To 1)
+    ReDim labels(1 To 1)
+    XR_CollectTables mDoc.Tables, "", mTblPaths, labels, mTblN
+    cboTable.Clear
+    cboTable.AddItem "(keine Tabelle)"
+    For i = 1 To mTblN
+        cboTable.AddItem labels(i)
+    Next
+    cboTable.ListIndex = 0
+End Sub
+
+Private Function GuessTable() As Long
+    Dim i As Long, s As Long, best As Long, t As Object
+    For i = 1 To mTblN
+        Set t = XR_GetTable(mDoc, mTblPaths(i))
+        If Not t Is Nothing Then
+            s = XR_TableScore(t)
+            If s > best Then best = s: GuessTable = i
+        End If
+    Next
+End Function
+
+Private Function HeaderRows() As Long
+    HeaderRows = Val(txtHdr.Text)
+    If HeaderRows < 0 Then HeaderRows = 0
+End Function
+
+Private Sub LoadGrid()
+    Dim t As Object
+    mGRows = 0
+    mGCols = 0
+    If cboTable.ListIndex >= 1 Then
+        Set t = XR_GetTable(mDoc, mTblPaths(cboTable.ListIndex))
+        If Not t Is Nothing Then XR_ReadGrid t, mGrid, mGRows, mGCols
+    End If
+    BuildColumnItems
+End Sub
+
+Private Function HeaderText(ByVal c As Long) As String
+    Dim r As Long, s As String
+    For r = 1 To HeaderRows
+        If r <= mGRows Then s = s & " " & Replace(mGrid(r, c), vbLf, " ")
+    Next
+    HeaderText = Trim$(s)
+End Function
+
+Private Sub BuildColumnItems()
+    Dim items() As String, c As Long, h As String, i As Long, r As Long
+    ReDim items(0 To mGCols)
+    items(0) = SRC_NOCOL
+    For c = 1 To mGCols
+        h = HeaderText(c)
+        If Len(h) = 0 Then
+            r = HeaderRows + 1
+            If r <= mGRows Then
+                If Len(mGrid(r, c)) > 0 Then h = "[" & Left$(Replace(mGrid(r, c), vbLf, " "), 24) & "]"
+            End If
+        End If
+        items(c) = "Sp. " & c & IIf(Len(h) > 0, ": " & Left$(h, 40), "")
+    Next
+    For i = 1 To mLDefN
+        mMap(i).SetColumns items
+    Next
+End Sub
+
+Private Function MapIndex(ByVal id As String) As Long
+    Dim i As Long
+    For i = 1 To mLDefN
+        If mMap(i).ID = id Then MapIndex = i: Exit Function
+    Next
+End Function
+
+Private Sub AssignCol(ByVal id As String, ByVal c As Long)
+    Dim i As Long
+    i = MapIndex(id)
+    If i > 0 Then
+        If mMap(i).ColIndex = 0 Then mMap(i).SetColumn c
+    End If
+End Sub
+
+Private Function ColUsed(ByVal c As Long) As Boolean
+    Dim i As Long
+    For i = 1 To mLDefN
+        If mMap(i).ColIndex = c Then ColUsed = True: Exit Function
+    Next
+End Function
+
+' Spaltenzuordnung anhand der Überschriften vorschlagen
+Private Sub AutoMapColumns()
+    Dim c As Long, h As String, i As Long, isNum As Boolean, isName As Boolean, r As Long
+    For i = 1 To mLDefN
+        mMap(i).SetColumn 0
+    Next
+    For c = 1 To mGCols
+        h = LCase$(HeaderText(c))
+        If Len(h) > 0 Then
+            isNum = (InStr(h, "artikelnummer") > 0 Or InStr(h, "art.-nr") > 0 Or InStr(h, "artnr") > 0 _
+                     Or InStr(h, "art.nr") > 0 Or InStr(h, "artikel-nr") > 0)
+            isName = (InStr(h, "bezeichnung") > 0 Or InStr(h, "beschreibung") > 0 Or InStr(h, "leistung") > 0 _
+                      Or InStr(h, "text") > 0 Or (InStr(h, "artikel") > 0 And Not isNum))
+            If Left$(h, 3) = "pos" Or h = "nr" Or h = "nr." Then AssignCol "BT-126", c
+            If InStr(h, "menge") > 0 Or InStr(h, "anzahl") > 0 Then AssignCol "BT-129", c
+            If InStr(h, "einheit") > 0 Or h = "me" Then AssignCol "BT-130", c
+            If InStr(h, "einzelpreis") > 0 Or (InStr(h, "preis") > 0 And InStr(h, "gesamt") = 0) Then AssignCol "BT-146", c
+            If (InStr(h, "betrag") > 0 Or InStr(h, "gesamt") > 0 Or InStr(h, "summe") > 0) And InStr(h, "einzel") = 0 Then AssignCol "BT-131", c
+            If isName Then AssignCol "BT-153", c
+            If isNum And Not isName Then AssignCol "BT-155", c
+            If InStr(h, "ust") > 0 Or InStr(h, "mwst") > 0 Then AssignCol "BT-152", c
+        End If
+    Next
+    ' Einheit ohne Überschrift an den Werten erkennen (z.B. "St.")
+    If mMap(MapIndex("BT-130")).ColIndex = 0 Then
+        r = HeaderRows + 1
+        If r <= mGRows Then
+            For c = 1 To mGCols
+                If Not ColUsed(c) And Len(mGrid(r, c)) > 0 Then
+                    If Len(XR_UnitCode(mGrid(r, c), "")) > 0 Then AssignCol "BT-130", c: Exit For
+                End If
+            Next
+        End If
+    End If
+End Sub
+
+Private Sub RefreshPositions()
+    Dim ids() As String, cols() As Long, specs() As String, defs() As String
+    Dim i As Long, rFrom As Long, rTo As Long
+    ReDim ids(1 To mLDefN)
+    ReDim cols(1 To mLDefN)
+    ReDim specs(1 To mLDefN)
+    ReDim defs(1 To mLDefN)
+    For i = 1 To mLDefN
+        ids(i) = mMap(i).ID
+        cols(i) = mMap(i).ColIndex
+        specs(i) = mMap(i).LineSpec
+        defs(i) = mMap(i).DefValue
+    Next
+    rFrom = Val(txtFrom.Text)
+    If rFrom < 1 Then rFrom = HeaderRows + 1
+    rTo = Val(txtTo.Text)
+    If rTo < 1 Or rTo > mGRows Then rTo = mGRows
+    If mGRows > 0 Then
+        mLineN = XR_BuildLines(mGrid, mGRows, mGCols, ids, cols, specs, defs, mLDefN, rFrom, rTo, mLines)
+    Else
+        mLineN = 0
+    End If
+    FillPosList
+    RecalcTotals
+    UpdateState
+End Sub
+
+Private Sub FillPosList()
+    Dim arr() As Variant, i As Long
+    lstPos.Clear
+    If mLineN = 0 Then Exit Sub
+    ReDim arr(0 To mLineN - 1, 0 To 7)
+    For i = 1 To mLineN
+        With mLines(i)
+            arr(i - 1, 0) = .ID
+            arr(i - 1, 1) = .SellerID
+            arr(i - 1, 2) = .Name & IIf(Len(.Desc) > 0, " - " & .Desc, "")
+            arr(i - 1, 3) = XR_FmtQty(.Qty)
+            arr(i - 1, 4) = .Unit
+            arr(i - 1, 5) = XR_FmtPrice(.Price)
+            arr(i - 1, 6) = XR_FmtAmt(.Net)
+            arr(i - 1, 7) = .Cat & " " & XR_FmtQty(.Rate) & "%"
+        End With
+    Next
+    lstPos.List = arr
+End Sub
+
+'==============================================================================
+' Werte und Summen
+'==============================================================================
+
+Private Function RowIndex(ByVal id As String) As Long
+    Dim i As Long
+    For i = 1 To mDefN
+        If mDefs(i).ID = id Then RowIndex = i: Exit Function
+    Next
+End Function
+
+' Ersatzwerte: leere Käuferreferenz (BT-10) wird bei B2B mit der Bestellnummer (BT-13) gefüllt
+Private Sub ApplyFallbacks()
+    Dim i10 As Long, i13 As Long, v As String
+    i10 = RowIndex("BT-10")
+    i13 = RowIndex("BT-13")
+    If i10 = 0 Or i13 = 0 Then Exit Sub
+    v = mRows(i13).OwnValue
+    If mRows(i10).FallbackValue <> v Or Len(mRows(i10).FallbackFrom) = 0 Then
+        mRows(i10).FallbackFrom = "BT-13 Bestellreferenz"
+        mRows(i10).FallbackValue = v
+        mRows(i10).UpdateDisplay
+    End If
+End Sub
+
+Private Sub PushValues()
+    Dim i As Long
+    ApplyFallbacks
+    XR_ClearValues
+    For i = 1 To mDefN
+        If Not mRows(i) Is Nothing Then XR_SetValue mRows(i).ID, mRows(i).Value
+    Next
+End Sub
+
+Private Sub SetCalc(ByVal id As String, ByVal v As String)
+    Dim i As Long
+    i = RowIndex(id)
+    If i > 0 Then
+        mRows(i).CalcValue = v
+        mRows(i).UpdateDisplay
+    End If
+End Sub
+
+Private Sub RecalcTotals()
+    Dim k As Long, sB As String, sV As String, sC As String, sR As String, cur As String
+    PushValues
+    XR_CalcTotals mLines, mLineN, mTot
+    If mLineN = 0 Then
+        For k = 106 To 119
+            SetCalc "BT-" & k, ""
+        Next
+        lblSum.Caption = "Keine Positionen erkannt."
+        Exit Sub
+    End If
+    SetCalc "BT-106", XR_FmtAmt(mTot.LineSum)
+    SetCalc "BT-107", IIf(mTot.AllowAmt <> 0, XR_FmtAmt(mTot.AllowSum), "")
+    SetCalc "BT-108", IIf(mTot.ChargeAmt <> 0, XR_FmtAmt(mTot.ChargeSum), "")
+    SetCalc "BT-109", XR_FmtAmt(mTot.NetTotal)
+    SetCalc "BT-110", XR_FmtAmt(mTot.VatTotal)
+    SetCalc "BT-112", XR_FmtAmt(mTot.Gross)
+    SetCalc "BT-115", XR_FmtAmt(mTot.Due)
+    For k = 1 To mTot.nGroups
+        If k > 1 Then sB = sB & " | ": sV = sV & " | ": sC = sC & " | ": sR = sR & " | "
+        sB = sB & XR_FmtAmt(mTot.gBase(k))
+        sV = sV & XR_FmtAmt(mTot.gVat(k))
+        sC = sC & mTot.gCat(k)
+        sR = sR & XR_FmtDec(mTot.gRate(k), 2)
+    Next
+    SetCalc "BT-116", sB
+    SetCalc "BT-117", sV
+    SetCalc "BT-118", sC
+    SetCalc "BT-119", sR
+    cur = XR_NormCurrency(BTV("BT-5"))
+    lblSum.Caption = mLineN & " Position(en)    Netto: " & XR_FmtAmt(mTot.NetTotal) & "    USt: " & _
+                     XR_FmtAmt(mTot.VatTotal) & "    Brutto: " & XR_FmtAmt(mTot.Gross) & " " & cur
+End Sub
+
+Private Sub UpdateState()
+    Dim i As Long, miss As String, nMiss As Long
+    ApplyFallbacks
+    For i = 1 To mDefN
+        If Not mRows(i) Is Nothing Then
+            If mRows(i).Req = "P" And Len(mRows(i).Value) = 0 Then
+                nMiss = nMiss + 1
+                If nMiss <= 14 Then miss = miss & IIf(Len(miss) > 0, ", ", "") & mRows(i).ID
+            End If
+        End If
+    Next
+    If nMiss > 14 Then miss = miss & ", ..."
+    If nMiss > 0 Then
+        lblStatus.Caption = "Fehlende Pflichtangaben (" & nMiss & "): " & miss
+        lblStatus.ForeColor = RGB(200, 0, 0)
+    ElseIf mLineN = 0 Then
+        lblStatus.Caption = "Keine Rechnungspositionen erkannt - bitte Tabelle und Spaltenzuordnung prüfen."
+        lblStatus.ForeColor = RGB(200, 0, 0)
+    Else
+        lblStatus.Caption = "Alle Pflichtfelder sind ausgefüllt."
+        lblStatus.ForeColor = RGB(0, 140, 0)
+    End If
+    cmdCreate.Enabled = (nMiss = 0 And mLineN > 0)
+End Sub
+
+Private Function AffectsTotals(ByVal id As String) As Boolean
+    Select Case id
+        Case "BT-5", "BT-92", "BT-93", "BT-94", "BT-95", "BT-96", _
+             "BT-99", "BT-100", "BT-101", "BT-102", "BT-103", "BT-113", "BT-114"
+            AffectsTotals = True
+    End Select
+End Function
+
+' Aufruf aus clsBTRow: andere Textmarke bzw. manuell gewählt
+Public Sub OnBTSourceChanged(ByVal idx As Long)
+    Dim r As clsBTRow
+    Set r = mRows(idx)
+    If r.SourceKind = "B" Then r.BmValue = BmText(r.BookmarkName) Else r.BmValue = ""
+    r.UpdateDisplay
+    If AffectsTotals(r.ID) Then RecalcTotals
+    UpdateState
+End Sub
+
+' Aufruf aus clsBTRow: manueller Inhalt geändert
+Public Sub OnBTValueChanged(ByVal idx As Long)
+    mRows(idx).UpdateDisplay
+    If AffectsTotals(mRows(idx).ID) Then RecalcTotals
+    UpdateState
+End Sub
+
+' Aufruf aus clsMapRow: Spaltenzuordnung geändert
+Public Sub OnMapChanged()
+    RefreshPositions
+End Sub
+
+'==============================================================================
+' Konfiguration laden / speichern
+'==============================================================================
+
+Private Function FindBTBookmark(ByVal id As String) As String
+    Dim i As Long, num As String, u As String, p As Variant
+    num = Mid$(id, 4)
+    For i = 1 To mBmN
+        u = UCase$(mBmNames(i))
+        For Each p In Array("BT_" & num, "BT" & num)
+            If u = p Or Left$(u, Len(p) + 1) = p & "_" Then FindBTBookmark = mBmNames(i): Exit Function
+        Next
+    Next
+End Function
+
+Private Sub SelectBookmark(ByVal r As clsBTRow, ByVal nm As String)
+    Dim k As Long
+    For k = 1 To r.cbo.ListCount - 1
+        If StrComp(r.cbo.List(k), nm, vbTextCompare) = 0 Then Exit For
+    Next
+    If k >= r.cbo.ListCount Then r.cbo.AddItem nm     ' Textmarke fehlt im Dokument
+    r.cbo.ListIndex = k
+    r.BmValue = BmText(nm)
+End Sub
+
+Private Sub ApplyConfig()
+    Dim hasCfg As Boolean, i As Long, v As String, found As Boolean, r As clsBTRow
+    Dim idx As Long, parts() As String, tblOk As Boolean
+
+    hasCfg = XR_ParseConfig(XR_ReadConfig(mDoc))
+    For i = 1 To mDefN
+        If Not mRows(i) Is Nothing Then
+            Set r = mRows(i)
+            If hasCfg Then
+                v = XR_CfgGet(r.ID, found)
+                If found Then
+                    If Left$(v, 2) = "b:" Then
+                        SelectBookmark r, XR_Unesc(Mid$(v, 3))
+                    ElseIf Left$(v, 2) = "t:" Then
+                        r.SetManualText XR_Unesc(Mid$(v, 3))
+                    End If
+                End If
+            Else
+                v = FindBTBookmark(r.ID)
+                If Len(v) > 0 Then
+                    SelectBookmark r, v
+                ElseIf r.Kind <> "K" Then
+                    r.SetManualText mDefs(i).DefVal
+                End If
+            End If
+            r.UpdateDisplay
+        End If
+    Next
+
+    idx = 0
+    If hasCfg Then
+        v = XR_Unesc(XR_CfgGet("TAB"))
+        For i = 1 To mTblN
+            If mTblPaths(i) = v Then idx = i: tblOk = True: Exit For
+        Next
+        txtHdr.Text = XR_Unesc(XR_CfgGet("HDR"))
+        txtFrom.Text = XR_Unesc(XR_CfgGet("FROM"))
+        txtTo.Text = XR_Unesc(XR_CfgGet("TO"))
+    End If
+    If Not tblOk Then idx = GuessTable()
+    If Len(txtHdr.Text) = 0 Then txtHdr.Text = "1"
+    cboTable.ListIndex = idx
+    LoadGrid
+
+    If hasCfg And tblOk Then
+        For i = 1 To mLDefN
+            v = XR_CfgGet("L." & mMap(i).ID, found)
+            If found Then
+                parts = Split(v & "||", "|")
+                mMap(i).SetValues Val(parts(0)), XR_Unesc(parts(1)), XR_Unesc(parts(2))
+            Else
+                mMap(i).SetValues 0, "", ""
+            End If
+        Next
+    Else
+        For i = 1 To mLDefN
+            mMap(i).SetValues 0, "", mLDefs(i).DefVal
+        Next
+        AutoMapColumns
+    End If
+End Sub
+
+Private Function BuildConfig() As String
+    Dim s As String, i As Long, r As clsBTRow
+    s = "v=" & XR_CFG_VERSION
+    For i = 1 To mDefN
+        If Not mRows(i) Is Nothing Then
+            Set r = mRows(i)
+            Select Case r.SourceKind
+                Case "B": s = s & ";" & r.ID & "=b:" & XR_Esc(r.BookmarkName)
+                Case "M": If Len(r.txt.Text) > 0 Then s = s & ";" & r.ID & "=t:" & XR_Esc(r.txt.Text)
+            End Select
+        End If
+    Next
+    If cboTable.ListIndex >= 1 Then s = s & ";TAB=" & XR_Esc(mTblPaths(cboTable.ListIndex))
+    s = s & ";HDR=" & XR_Esc(txtHdr.Text)
+    If Len(txtFrom.Text) > 0 Then s = s & ";FROM=" & XR_Esc(txtFrom.Text)
+    If Len(txtTo.Text) > 0 Then s = s & ";TO=" & XR_Esc(txtTo.Text)
+    For i = 1 To mLDefN
+        With mMap(i)
+            If .ColIndex > 0 Or Len(.LineSpec) > 0 Or Len(.DefValue) > 0 Then
+                s = s & ";L." & .ID & "=" & .ColIndex & "|" & XR_Esc(.LineSpec) & "|" & XR_Esc(.DefValue)
+            End If
+        End With
+    Next
+    BuildConfig = s
+End Function
+
+'==============================================================================
+' XRechnung erstellen
+'==============================================================================
+
+Public Function ExportXml(ByVal path As String, ByVal interactive As Boolean) As Boolean
+    Dim errs As Collection, warns As Collection, dom As Object, msg As String, i As Long, r As clsBTRow
+
+    On Error GoTo Fehler
+    Set errs = New Collection
+    Set warns = New Collection
+    LastMessage = ""
+    RecalcTotals
+    Set dom = XR_BuildXml(mLines, mLineN, mTot, errs)
+    XR_Check mLines, mLineN, mTot, errs, warns
+    For i = 1 To mDefN
+        If Not mRows(i) Is Nothing Then
+            Set r = mRows(i)
+            If r.UsesFallback Then
+                warns.Add r.ID & ": Die Käuferreferenz ist leer - verwendet wird " & r.FallbackFrom & " """ & _
+                          r.FallbackValue & """. Bei Rechnungen an Behörden muss hier die Leitweg-ID stehen."
+            End If
+            If r.Kind = "K" And r.SourceKind = "B" Then
+                If Not r.CalcMatches Then
+                    warns.Add r.ID & ": Berechneter Wert " & r.CalcValue & " weicht von Textmarke """ & _
+                              r.BookmarkName & """ (" & r.BmValue & ") ab."
+                End If
+            End If
+        End If
+    Next
+
+    If errs.Count > 0 Then
+        msg = "Die XRechnung kann nicht erstellt werden:" & vbCr & vbCr & XR_JoinCol(errs, 20)
+        If warns.Count > 0 Then msg = msg & vbCr & vbCr & "Hinweise:" & vbCr & XR_JoinCol(warns, 10)
+        LastMessage = msg
+        If interactive Then MsgBox msg, vbExclamation, "XRechnung"
+        Exit Function
+    End If
+    If warns.Count > 0 Then
+        LastMessage = "Hinweise:" & vbCr & XR_JoinCol(warns, 50)
+        If interactive Then
+            If MsgBox("Hinweise:" & vbCr & vbCr & XR_JoinCol(warns, 15) & vbCr & vbCr & _
+                      "XRechnung trotzdem erstellen?", vbQuestion + vbYesNo, "XRechnung") = vbNo Then Exit Function
+        End If
+    End If
+    If interactive And Len(Dir$(path)) > 0 Then
+        If MsgBox("Die Datei existiert bereits:" & vbCr & path & vbCr & vbCr & "Überschreiben?", _
+                  vbQuestion + vbYesNo, "XRechnung") = vbNo Then Exit Function
+    End If
+    XR_SaveXml dom, path
+    If interactive Then MsgBox "Die XRechnung wurde erstellt:" & vbCr & path, vbInformation, "XRechnung"
+    ExportXml = True
+    Exit Function
+Fehler:
+    LastMessage = Err.Description
+    If interactive Then MsgBox "Fehler beim Erstellen der XRechnung:" & vbCr & Err.Description, vbCritical, "XRechnung"
+End Function
+
+'==============================================================================
+' Ereignisse
+'==============================================================================
+
+Private Sub cmdCreate_Click()
+    Dim path As String
+    path = XR_TargetPath(mDoc, True)
+    If Len(path) = 0 Then Exit Sub
+    If ExportXml(path, True) Then Me.Hide
+End Sub
+
+Private Sub cmdSave_Click()
+    On Error GoTo Fehler
+    XR_WriteConfig mDoc, BuildConfig()
+    If MsgBox("Die Zuordnung wurde als benutzerdefinierte Eigenschaft ""XRechnung"" im Dokument gespeichert." & _
+              vbCr & vbCr & "Dokument jetzt speichern?", vbQuestion + vbYesNo, "XRechnung") = vbYes Then
+        mDoc.Save
+    End If
+    Exit Sub
+Fehler:
+    MsgBox "Die Zuordnung konnte nicht gespeichert werden:" & vbCr & Err.Description, vbCritical, "XRechnung"
+End Sub
+
+Private Sub cmdCancel_Click()
+    Me.Hide
+End Sub
+
+Private Sub cboView_Change()
+    If Loading Then Exit Sub
+    LayoutRows
+End Sub
+
+Private Sub cboTable_Change()
+    If Loading Then Exit Sub
+    Loading = True
+    LoadGrid
+    AutoMapColumns
+    Loading = False
+    RefreshPositions
+End Sub
+
+Private Sub txtHdr_Change()
+    If Loading Then Exit Sub
+    BuildColumnItems
+    RefreshPositions
+End Sub
+
+Private Sub txtFrom_Change()
+    If Loading Then Exit Sub
+    RefreshPositions
+End Sub
+
+Private Sub txtTo_Change()
+    If Loading Then Exit Sub
+    RefreshPositions
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = 0 Then           ' vbFormControlMenu (Schließen-Kreuz)
+        Cancel = True
+        Me.Hide
+    End If
+End Sub

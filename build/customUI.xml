@@ -1,0 +1,17 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui">
+  <ribbon>
+    <tabs>
+      <tab idMso="TabHome">
+        <group id="grpXRechnung" label="E-Rechnung" insertAfterMso="GroupEditing">
+          <button id="btnXRechnung"
+                  label="XRechnung erzeugen"
+                  size="large"
+                  imageMso="ExportXmlFile"
+                  screentip="XRechnung erzeugen"
+                  supertip="Erzeugt aus der geoeffneten Rechnung eine XRechnung (XML, UBL 2.1, XRechnung 3.0)."
+                  onAction="XR_RibbonErzeugen"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

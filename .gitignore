@@ -1,0 +1,13 @@
+# Private Vorlagen und Rechnungen (echte Firmen- und Kundendaten)
+privat/
+
+# Office-Sperr- und Sicherungsdateien
+~$*
+*.tmp
+*.bak
+*.wbk
+
+# Lokal erzeugte XRechnungen außerhalb des Beispiels
+*.xml
+!beispiel/*.xml
+!build/*.xml
